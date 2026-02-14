@@ -1,0 +1,104 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CampaignStatus {
+  CREATED
+  RUNNING
+  COMPLETE
+  FAILED
+}
+
+enum LeadStatus {
+  NEW
+  SCRAPED
+  ENRICHED
+  SITE_GENERATED
+  IMAGES_READY
+  DEPLOYED
+  EMAILED_1
+  CALLED_1
+  REPLIED
+  BOOKED
+  DO_NOT_CONTACT
+}
+
+enum EventType {
+  CAMPAIGN_CREATED
+  LEAD_SCRAPED
+  SCRAPE_COMPLETED
+  LEAD_ENRICHED
+  SITE_GENERATED
+  IMAGES_READY
+  DEPLOYED
+  SITE_DEPLOYED
+  EMAIL_SENT
+  CALL_PLACED
+  CALL_RESULT
+  LEAD_REPLIED
+  LEAD_BOOKED
+  ERROR
+}
+
+model Campaign {
+  id        String         @id @default(cuid())
+  niche     String
+  city      String
+  limit     Int
+  status    CampaignStatus @default(CREATED)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  leads  Lead[]
+  events Event[]
+}
+
+model Lead {
+  id             String     @id @default(cuid())
+  campaignId     String
+  businessName   String?
+  websiteUrl     String?
+  phone          String?
+  email          String?
+  address        String?
+  sourceUrl      String?
+  demoUrl        String?
+  heroImageUrl   String?
+  serviceImageUrls String[] @default([])
+  status         LeadStatus @default(NEW)
+  doNotContact   Boolean    @default(false)
+  emailSentCount Int        @default(0)
+  callAttempts   Int        @default(0)
+  interested     Boolean    @default(false)
+  booked         Boolean    @default(false)
+  lastError      String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  events   Event[]
+
+  @@index([campaignId])
+  @@unique([campaignId, websiteUrl])
+}
+
+model Event {
+  id         String    @id @default(cuid())
+  campaignId String
+  leadId     String?
+  type       EventType
+  metadata   Json
+  createdAt  DateTime  @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  lead     Lead?    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@index([campaignId])
+  @@index([leadId])
+  @@index([type])
+}

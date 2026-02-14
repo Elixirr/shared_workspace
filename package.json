@@ -1,0 +1,40 @@
+{
+  "name": "contractor-outreach-pipeline",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Automated outreach pipeline for local contractors",
+  "main": "dist/api/index.js",
+  "scripts": {
+    "dev": "ts-node src/api/index.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.3.1",
+    "bullmq": "^5.41.3",
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.22.1",
+    "ioredis": "^5.4.2",
+    "jszip": "^3.10.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.19.11",
+    "prisma": "^6.3.1",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Elixirr/shared_workspace.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Elixirr/shared_workspace/issues"
+  },
+  "homepage": "https://github.com/Elixirr/shared_workspace#readme"
+}
