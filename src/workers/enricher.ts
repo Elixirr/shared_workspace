@@ -8,6 +8,8 @@ const workerName = "enricher";
 const defaultConcurrency = 5;
 const workerConcurrency = Number(process.env.ENRICHER_CONCURRENCY ?? defaultConcurrency);
 const fetchTimeoutMs = Number(process.env.ENRICHER_FETCH_TIMEOUT_MS ?? 7000);
+const placeholderWebsiteUrl =
+  process.env.PLACEHOLDER_WEBSITE_URL ?? "https://www.kirnconstruction.com/";
 const userAgent =
   process.env.ENRICHER_USER_AGENT ??
   "Mozilla/5.0 (compatible; OutreachBot/0.1; +https://example.com/bot)";
@@ -23,6 +25,8 @@ type ExtractionSummary = {
   email: string | null;
   serviceKeywords: string[];
   claims: string[];
+  brandColors: string[];
+  summary: string;
   pagesVisited: string[];
 };
 
@@ -40,6 +44,15 @@ const withHttpProtocol = (url: string): string => {
 const toAbsoluteUrl = (baseUrl: string, path: string): string => {
   const base = new URL(baseUrl);
   return new URL(path, `${base.protocol}//${base.host}`).toString();
+};
+
+const isMockWebsiteUrl = (websiteUrl: string): boolean => {
+  try {
+    const host = new URL(withHttpProtocol(websiteUrl)).hostname.toLowerCase();
+    return host === "example.com" || host.endsWith(".example.com");
+  } catch {
+    return false;
+  }
 };
 
 const safeFetchHtml = async (url: string): Promise<PageResult | null> => {
@@ -145,6 +158,84 @@ const extractClaims = (text: string): string[] => {
   return claims;
 };
 
+const normalizeHexColor = (color: string): string => {
+  const cleaned = color.toLowerCase();
+  if (/^#[0-9a-f]{3}$/.test(cleaned)) {
+    return `#${cleaned[1]}${cleaned[1]}${cleaned[2]}${cleaned[2]}${cleaned[3]}${cleaned[3]}`;
+  }
+  return cleaned;
+};
+
+const hexToRgb = (hex: string): { r: number; g: number; b: number } | null => {
+  const normalized = normalizeHexColor(hex);
+  const match = /^#([0-9a-f]{6})$/.exec(normalized);
+  if (!match) {
+    return null;
+  }
+  const value = match[1];
+  return {
+    r: Number.parseInt(value.slice(0, 2), 16),
+    g: Number.parseInt(value.slice(2, 4), 16),
+    b: Number.parseInt(value.slice(4, 6), 16)
+  };
+};
+
+const isUsableBrandColor = (hex: string): boolean => {
+  const rgb = hexToRgb(hex);
+  if (!rgb) {
+    return false;
+  }
+
+  const { r, g, b } = rgb;
+  const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+  const maxDiff = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b));
+
+  // Drop near-white / near-black and mostly grayscale colors.
+  if (brightness < 30 || brightness > 235) {
+    return false;
+  }
+  if (maxDiff < 12) {
+    return false;
+  }
+
+  return true;
+};
+
+const extractBrandColors = (htmlList: string[]): string[] => {
+  const counts = new Map<string, number>();
+  const hexPattern = /#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b/g;
+
+  for (const html of htmlList) {
+    const matches = html.match(hexPattern) ?? [];
+    for (const raw of matches) {
+      const normalized = normalizeHexColor(raw);
+      counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+    }
+  }
+
+  const sorted = Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([color]) => color);
+
+  const usable = sorted.filter(isUsableBrandColor);
+  const palette = (usable.length > 0 ? usable : sorted).slice(0, 3);
+  return palette;
+};
+
+const extractSummary = (text: string): string => {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) {
+    return "";
+  }
+
+  const sentences = cleaned
+    .split(/(?<=[.!?])\s+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 30 && line.length < 220);
+
+  return sentences.slice(0, 2).join(" ").slice(0, 380);
+};
+
 const crawlLeadWebsite = async (websiteUrl: string): Promise<ExtractionSummary> => {
   const normalizedBaseUrl = withHttpProtocol(websiteUrl);
   const pageUrls = [
@@ -162,14 +253,19 @@ const crawlLeadWebsite = async (websiteUrl: string): Promise<ExtractionSummary> 
   }
 
   const combinedText = pages.map((p) => p.text).join(" ");
-  const serviceKeywords = extractServiceKeywords(pages.map((p) => p.html));
+  const htmlList = pages.map((p) => p.html);
+  const serviceKeywords = extractServiceKeywords(htmlList);
   const claims = extractClaims(combinedText);
+  const brandColors = extractBrandColors(htmlList);
+  const summary = extractSummary(combinedText);
 
   return {
     phone: bestGuessPhone(combinedText),
     email: bestGuessEmail(combinedText),
     serviceKeywords,
     claims,
+    brandColors,
+    summary,
     pagesVisited: pages.map((p) => p.url)
   };
 };
@@ -192,36 +288,17 @@ const processEnrichJob = async (job: Job<EnrichJob>): Promise<void> => {
     return;
   }
 
-  if (!lead.websiteUrl) {
-    await prisma.lead.update({
-      where: { id: leadId },
-      data: {
-        status: LeadStatus.ENRICHED,
-        lastError: "no website"
-      }
-    });
-
-    await prisma.event.create({
-      data: {
-        campaignId,
-        leadId,
-        type: EventType.LEAD_ENRICHED,
-        metadata: {
-          reason: "no website",
-          serviceKeywords: [],
-          claims: [],
-          pagesVisited: []
-        }
-      }
-    });
-
-    await enqueueSite({ leadId });
-    logMessage(campaignId, leadId, "enriched without website; queued generic site generation");
-    return;
+  const usePlaceholder =
+    !lead.websiteUrl || isMockWebsiteUrl(lead.websiteUrl);
+  const websiteToCrawl = usePlaceholder
+    ? placeholderWebsiteUrl
+    : lead.websiteUrl;
+  if (!websiteToCrawl) {
+    throw new Error("No website available for enrichment");
   }
 
   try {
-    const extracted = await crawlLeadWebsite(lead.websiteUrl);
+    const extracted = await crawlLeadWebsite(websiteToCrawl);
     const phone = extracted.phone ?? lead.phone;
     const email = extracted.email ?? lead.email;
 
@@ -231,7 +308,12 @@ const processEnrichJob = async (job: Job<EnrichJob>): Promise<void> => {
         phone,
         email,
         status: LeadStatus.ENRICHED,
-        lastError: extracted.pagesVisited.length > 0 ? null : "crawl yielded no html pages"
+        lastError:
+          extracted.pagesVisited.length > 0
+            ? usePlaceholder
+              ? `placeholder crawl used (${placeholderWebsiteUrl})`
+              : null
+            : "crawl yielded no html pages"
       }
     });
 
@@ -245,6 +327,10 @@ const processEnrichJob = async (job: Job<EnrichJob>): Promise<void> => {
           email,
           serviceKeywords: extracted.serviceKeywords,
           claims: extracted.claims,
+          brandColors: extracted.brandColors,
+          summary: extracted.summary,
+          placeholderUsed: usePlaceholder,
+          crawledFromUrl: websiteToCrawl,
           pagesVisited: extracted.pagesVisited
         }
       }
@@ -254,7 +340,7 @@ const processEnrichJob = async (job: Job<EnrichJob>): Promise<void> => {
     logMessage(
       campaignId,
       leadId,
-      `enriched; pages=${extracted.pagesVisited.length}, services=${extracted.serviceKeywords.length}`
+      `enriched; pages=${extracted.pagesVisited.length}, services=${extracted.serviceKeywords.length}, source=${websiteToCrawl}`
     );
   } catch (error) {
     const details = error instanceof Error ? error.message : "unknown enrichment error";
@@ -276,6 +362,8 @@ const processEnrichJob = async (job: Job<EnrichJob>): Promise<void> => {
           error: details,
           serviceKeywords: [],
           claims: [],
+          brandColors: [],
+          summary: "",
           pagesVisited: []
         }
       }

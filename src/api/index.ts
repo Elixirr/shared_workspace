@@ -1,8 +1,16 @@
 import "dotenv/config";
 import express from "express";
 import path from "node:path";
-import { createCampaignHandler, getCampaignMetricsHandler } from "./command-handler";
+import {
+  createManualOneLeadCampaignHandler,
+  createCampaignHandler,
+  getCampaignLeadsHandler,
+  getCampaignMetricsHandler,
+  searchOneLeadAndCreateCampaignHandler,
+  regenerateLeadDemoHandler
+} from "./command-handler";
 import { callWebhookHandler } from "./webhooks-handler";
+import { dashboardHandler } from "./dashboard-handler";
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
@@ -14,6 +22,8 @@ app.get("/", (_req, res) => {
   res.json({ status: "Pipeline running..." });
 });
 
+app.get("/dashboard", dashboardHandler);
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
@@ -22,8 +32,24 @@ app.post("/campaigns", (req, res) => {
   void createCampaignHandler(req, res);
 });
 
+app.post("/campaigns/search-one", (req, res) => {
+  void searchOneLeadAndCreateCampaignHandler(req, res);
+});
+
+app.post("/campaigns/manual-one", (req, res) => {
+  void createManualOneLeadCampaignHandler(req, res);
+});
+
 app.get("/campaigns/:id/metrics", (req, res) => {
   void getCampaignMetricsHandler(req, res);
+});
+
+app.get("/campaigns/:id/leads", (req, res) => {
+  void getCampaignLeadsHandler(req, res);
+});
+
+app.post("/leads/:id/regenerate", (req, res) => {
+  void regenerateLeadDemoHandler(req, res);
 });
 
 app.post("/webhooks/calls/:provider", (req, res) => {

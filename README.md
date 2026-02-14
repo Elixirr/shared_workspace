@@ -47,6 +47,20 @@ npm run prisma:generate
 npm run prisma:migrate -- --name init
 ```
 
+### Optional: AI Copy Personalization
+
+Set these in `.env` to let `site-generator` call an OpenAI-compatible API and produce lead-specific copy from scraped data:
+
+```bash
+AI_COPY_ENABLED=true
+OPENAI_API_KEY=your_key_here
+OPENAI_MODEL=gpt-4o-mini
+# optional override for OpenAI-compatible providers
+OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+If AI is disabled or fails, the worker automatically falls back to deterministic template copy.
+
 ## Run API
 
 ```bash

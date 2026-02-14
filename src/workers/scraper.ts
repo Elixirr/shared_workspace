@@ -1,5 +1,6 @@
 import { CampaignStatus, EventType, Lead, LeadStatus } from "@prisma/client";
 import { Job, Worker } from "bullmq";
+import { load } from "cheerio";
 import { prisma } from "../db/client";
 import { connection, enqueueEnrich, ScrapeJob } from "../queue";
 
@@ -21,6 +22,124 @@ interface ListingsProvider {
   scrapeListings(niche: string, city: string, limit: number): Promise<ListingRecord[]>;
 }
 
+const searchUserAgent =
+  process.env.SCRAPER_USER_AGENT ??
+  "Mozilla/5.0 (compatible; OutreachScraper/0.1; +https://example.com/bot)";
+
+const blockedHosts = new Set([
+  "duckduckgo.com",
+  "www.duckduckgo.com",
+  "google.com",
+  "www.google.com",
+  "maps.google.com",
+  "facebook.com",
+  "www.facebook.com",
+  "instagram.com",
+  "www.instagram.com",
+  "linkedin.com",
+  "www.linkedin.com",
+  "yelp.com",
+  "www.yelp.com",
+  "youtube.com",
+  "www.youtube.com",
+  "x.com",
+  "twitter.com"
+]);
+
+const decodeRedirectUrl = (rawHref: string): string | null => {
+  try {
+    const href = rawHref.startsWith("http") ? rawHref : `https://duckduckgo.com${rawHref}`;
+    const parsed = new URL(href);
+    const encoded = parsed.searchParams.get("uddg");
+    if (encoded) {
+      return decodeURIComponent(encoded);
+    }
+    return href;
+  } catch {
+    return null;
+  }
+};
+
+const cleanBusinessName = (raw: string): string =>
+  raw
+    .replace(/\s+/g, " ")
+    .replace(/[-|].*$/, "")
+    .trim()
+    .slice(0, 120);
+
+const inferBusinessNameFromHost = (host: string): string =>
+  host
+    .replace(/^www\./, "")
+    .split(".")[0]
+    .replace(/[-_]/g, " ")
+    .replace(/\b\w/g, (ch) => ch.toUpperCase())
+    .slice(0, 120);
+
+const searchDuckDuckGoListings = async (
+  niche: string,
+  city: string,
+  limit: number
+): Promise<ListingRecord[]> => {
+  const query = `${niche} ${city} official website`;
+  const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const response = await fetch(url, {
+    headers: { "user-agent": searchUserAgent }
+  });
+
+  if (!response.ok) {
+    return [];
+  }
+
+  const html = await response.text();
+  const $ = load(html);
+  const results = $(".result");
+  const listings: ListingRecord[] = [];
+  const seenHosts = new Set<string>();
+
+  for (const result of results.toArray()) {
+    if (listings.length >= limit) {
+      break;
+    }
+
+    const anchor = $(result).find(".result__a").first();
+    const href = anchor.attr("href");
+    const rawTitle = anchor.text().replace(/\s+/g, " ").trim();
+    if (!href) {
+      continue;
+    }
+
+    const targetUrl = decodeRedirectUrl(href);
+    if (!targetUrl) {
+      continue;
+    }
+
+    try {
+      const parsed = new URL(targetUrl);
+      const host = parsed.hostname.toLowerCase();
+      if (blockedHosts.has(host)) {
+        continue;
+      }
+      if (seenHosts.has(host)) {
+        continue;
+      }
+      seenHosts.add(host);
+
+      listings.push({
+        businessName: cleanBusinessName(rawTitle) || inferBusinessNameFromHost(host),
+        websiteUrl: `${parsed.protocol}//${parsed.hostname}`,
+        phone: null,
+        email: null,
+        address: `${city}`,
+        sourceUrl: targetUrl
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return listings;
+};
+
 const mockListingsProvider: ListingsProvider = {
   async scrapeListings(niche: string, city: string, limit: number): Promise<ListingRecord[]> {
     const total = Math.max(1, Math.min(limit, 25));
@@ -38,6 +157,17 @@ const mockListingsProvider: ListingsProvider = {
         sourceUrl: `https://example.com/search/${nicheSlug}/${citySlug}?result=${n}`
       };
     });
+  }
+};
+
+const duckDuckGoListingsProvider: ListingsProvider = {
+  async scrapeListings(niche: string, city: string, limit: number): Promise<ListingRecord[]> {
+    const cappedLimit = Math.max(1, Math.min(limit, 100));
+    const listings = await searchDuckDuckGoListings(niche, city, cappedLimit);
+    if (listings.length > 0) {
+      return listings;
+    }
+    return mockListingsProvider.scrapeListings(niche, city, cappedLimit);
   }
 };
 
@@ -61,7 +191,9 @@ export const scrapeListings = async (
   niche: string,
   city: string,
   limit: number,
-  provider: ListingsProvider = mockListingsProvider
+  provider: ListingsProvider = (process.env.SCRAPER_PROVIDER ?? "duckduckgo") === "mock"
+    ? mockListingsProvider
+    : duckDuckGoListingsProvider
 ): Promise<ListingRecord[]> => provider.scrapeListings(niche, city, limit);
 
 const upsertLeadFromListing = async (
