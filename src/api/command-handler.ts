@@ -32,6 +32,17 @@ type SearchLeadCandidate = {
   sourceUrl: string;
 };
 
+const inferNicheFromText = (text: string): string | null => {
+  const lowered = text.toLowerCase();
+  if (lowered.includes("construction")) return "construction";
+  if (lowered.includes("remodel")) return "remodeling";
+  if (lowered.includes("roof")) return "roofing";
+  if (lowered.includes("plumb")) return "plumbing";
+  if (lowered.includes("electrical") || lowered.includes("electrician")) return "electrical";
+  if (lowered.includes("hvac") || lowered.includes("heating") || lowered.includes("cooling")) return "hvac";
+  return null;
+};
+
 type CampaignMetricsSummary = {
   total: number;
   niche: string;
@@ -278,7 +289,16 @@ export const createManualOneLeadCampaignHandler = async (
       return;
     }
 
-    const { niche, city, businessName, websiteUrl, sheetDataUrl } = parsed.data;
+    let { niche, city, businessName, websiteUrl, sheetDataUrl } = parsed.data;
+    const looksLikeDashboardDefault =
+      niche.trim().toLowerCase() === "roofers" && city.trim().toLowerCase() === "dallas";
+    if (looksLikeDashboardDefault) {
+      const inferredNiche = inferNicheFromText(`${businessName} ${websiteUrl}`);
+      if (inferredNiche && inferredNiche !== "roofing") {
+        niche = inferredNiche;
+        city = "Service Area";
+      }
+    }
 
     const campaign = await prisma.campaign.create({
       data: {

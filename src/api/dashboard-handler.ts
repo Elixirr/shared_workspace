@@ -261,10 +261,15 @@ function rowsToArray(rows) {
         el.campaignStatus.textContent = message;
       };
 
+      const openInNewTab = (url) => {
+        const target = "_blank_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+        window.open(url, target, "noopener,noreferrer");
+      };
+
       const renderLeads = () => {
         const rows = state.leads.map((lead) => {
           const demoCell = lead.demoUrl
-            ? '<a class="link" href="' + lead.demoUrl + '" target="_blank" rel="noopener">Open</a>'
+            ? '<button data-open-demo="' + lead.demoUrl + '" class="secondary">Open</button>'
             : "-";
           return '<tr>' +
             '<td>' + (lead.businessName || "Unknown") + '</td>' +
@@ -411,12 +416,17 @@ function rowsToArray(rows) {
           setStatus("No demo URL ready yet.");
           return;
         }
-        window.open(first.demoUrl, "_blank", "noopener");
+        openInNewTab(first.demoUrl);
       });
 
       el.leadsBody.addEventListener("click", async (event) => {
         const target = event.target;
         if (!(target instanceof HTMLElement)) return;
+        const demoUrl = target.getAttribute("data-open-demo");
+        if (demoUrl) {
+          openInNewTab(demoUrl);
+          return;
+        }
         const leadId = target.getAttribute("data-regenerate");
         if (!leadId) return;
         target.setAttribute("disabled", "true");

@@ -1,51 +1,15 @@
 import { EventType, LeadStatus } from "@prisma/client";
 import { Job, Worker } from "bullmq";
 import { prisma } from "../db/client";
+import { resolveEmailProvider } from "../providers/email";
+import { EmailProvider } from "../providers/interfaces/email";
 import { callQueue, connection, EmailJob } from "../queue";
+import { runIdempotentStage } from "./base-worker";
 
 const workerName = "emailer";
 const defaultConcurrency = 5;
 const workerConcurrency = Number(process.env.EMAILER_CONCURRENCY ?? defaultConcurrency);
 const followUpCallDelayMs = 30 * 60 * 1000;
-
-type SendEmailInput = {
-  to: string;
-  subject: string;
-  html: string;
-  text: string;
-  headers?: Record<string, string>;
-};
-
-type SendEmailOutput = {
-  messageId: string;
-};
-
-export interface EmailProvider {
-  sendEmail(input: SendEmailInput): Promise<SendEmailOutput>;
-}
-
-class FakeEmailProvider implements EmailProvider {
-  async sendEmail(input: SendEmailInput): Promise<SendEmailOutput> {
-    const fakeMessageId = `fake-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    console.log("[fake-email-provider] to=%s subject=%s messageId=%s", input.to, input.subject, fakeMessageId);
-    return { messageId: fakeMessageId };
-  }
-}
-
-class RealEmailProvider implements EmailProvider {
-  async sendEmail(_input: SendEmailInput): Promise<SendEmailOutput> {
-    // TODO: Add SendGrid/Mailgun adapter and env vars.
-    throw new Error("Real email provider not implemented yet");
-  }
-}
-
-const resolveEmailProvider = (): EmailProvider => {
-  const env = (process.env.ENV ?? "development").toLowerCase();
-  if (env === "production") {
-    return new RealEmailProvider();
-  }
-  return new FakeEmailProvider();
-};
 
 const logMessage = (campaignId: string, leadId: string, message: string): void => {
   console.log(`[${campaignId}][${leadId}][${workerName}] ${message}`);
@@ -107,45 +71,63 @@ const processEmailJob = async (job: Job<EmailJob>): Promise<void> => {
   const businessName = lead.businessName ?? "there";
   const subject = buildSubject(businessName, step);
   const body = buildBody(businessName, lead.demoUrl, step);
-  const providerResult = await emailProvider.sendEmail({
-    to: lead.email,
-    subject,
-    html: body.html,
-    text: body.text,
-    headers: {
-      "x-campaign-id": campaignId,
-      "x-lead-id": lead.id,
-      "x-email-step": String(step)
+
+  const idemKey = `email:${lead.id}:step:${step}`;
+  const stageResult = await runIdempotentStage({
+    key: idemKey,
+    stage: "email",
+    campaignId,
+    leadId: lead.id,
+    workerName,
+    run: async () => {
+      const providerResult = await emailProvider.sendEmail({
+        to: lead.email!,
+        subject,
+        html: body.html,
+        text: body.text,
+        headers: {
+          "x-campaign-id": campaignId,
+          "x-lead-id": lead.id,
+          "x-email-step": String(step)
+        }
+      });
+
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: {
+          emailSentCount: { increment: 1 },
+          status: LeadStatus.EMAILED_1,
+          lastError: null
+        }
+      });
+
+      await prisma.event.create({
+        data: {
+          campaignId,
+          leadId: lead.id,
+          type: EventType.EMAIL_SENT,
+          metadata: {
+            step,
+            providerMessageId: providerResult.messageId,
+            subject
+          }
+        }
+      });
+
+      await callQueue.add(
+        "place-call",
+        { leadId: lead.id, attempt: 1 },
+        { delay: followUpCallDelayMs }
+      );
+
+      return { providerMessageId: providerResult.messageId };
     }
   });
 
-  await prisma.lead.update({
-    where: { id: lead.id },
-    data: {
-      emailSentCount: { increment: 1 },
-      status: LeadStatus.EMAILED_1,
-      lastError: null
-    }
-  });
-
-  await prisma.event.create({
-    data: {
-      campaignId,
-      leadId: lead.id,
-      type: EventType.EMAIL_SENT,
-      metadata: {
-        step,
-        providerMessageId: providerResult.messageId,
-        subject
-      }
-    }
-  });
-
-  await callQueue.add(
-    "place-call",
-    { leadId: lead.id, attempt: 1 },
-    { delay: followUpCallDelayMs }
-  );
+  if (!stageResult.executed) {
+    logMessage(campaignId, lead.id, `idempotency skip for step ${step}`);
+    return;
+  }
 
   logMessage(campaignId, lead.id, `email step ${step} sent; follow-up call queued (+30m)`);
 };

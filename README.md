@@ -69,6 +69,20 @@ npm run dev
 
 Server defaults to `http://localhost:3000`.
 
+## Quick Git Save
+
+Commit + push with one command:
+
+```bash
+./scripts/save.sh "your commit message"
+```
+
+If you omit the message, it auto-generates one with a timestamp:
+
+```bash
+./scripts/save.sh
+```
+
 ## Initial Campaign Command Endpoint
 
 `POST /campaigns`

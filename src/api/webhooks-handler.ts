@@ -35,7 +35,12 @@ export const callWebhookHandler = async (req: Request, res: Response): Promise<v
   }
 
   const payload = parsed.data;
-  const provider = req.params.provider;
+  const providerParam = req.params.provider;
+  const provider = Array.isArray(providerParam) ? providerParam[0] : providerParam;
+  if (!provider) {
+    res.status(400).json({ error: "provider is required" });
+    return;
+  }
 
   let leadId: string | null = payload.leadId ?? null;
   let campaignId: string | null = payload.campaignId ?? null;
@@ -62,6 +67,52 @@ export const callWebhookHandler = async (req: Request, res: Response): Promise<v
 
   const transcript = payload.transcript ?? "";
   const optOut = transcript.length > 0 ? hasOptOutIntent(transcript) : false;
+  const externalId = payload.callId ?? `${campaignId}:${leadId ?? "unknown"}:${payload.status}`;
+
+  const existingWebhook = await prisma.webhookEvent.findUnique({
+    where: {
+      provider_externalId_eventType: {
+        provider,
+        externalId,
+        eventType: payload.status
+      }
+    }
+  });
+  if (existingWebhook?.processedAt) {
+    res.json({
+      ok: true,
+      provider,
+      deduped: true,
+      optOutApplied: false
+    });
+    return;
+  }
+
+  const storedWebhook = await prisma.webhookEvent.upsert({
+    where: {
+      provider_externalId_eventType: {
+        provider,
+        externalId,
+        eventType: payload.status
+      }
+    },
+    create: {
+      provider,
+      externalId,
+      eventType: payload.status,
+      payload
+    },
+    update: {}
+  });
+  if (storedWebhook.processedAt) {
+    res.json({
+      ok: true,
+      provider,
+      deduped: true,
+      optOutApplied: false
+    });
+    return;
+  }
 
   await prisma.event.create({
     data: {
@@ -88,9 +139,23 @@ export const callWebhookHandler = async (req: Request, res: Response): Promise<v
     });
   }
 
+  await prisma.webhookEvent.update({
+    where: {
+      provider_externalId_eventType: {
+        provider,
+        externalId,
+        eventType: payload.status
+      }
+    },
+    data: {
+      processedAt: new Date()
+    }
+  });
+
   res.json({
     ok: true,
     provider,
+    deduped: false,
     optOutApplied: Boolean(leadId && optOut)
   });
 };

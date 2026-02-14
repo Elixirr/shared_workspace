@@ -56,6 +56,7 @@ model Campaign {
 
   leads  Lead[]
   events Event[]
+  idempotencyKeys IdempotencyKey[]
 }
 
 model Lead {
@@ -82,9 +83,41 @@ model Lead {
 
   campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   events   Event[]
+  idempotencyKeys IdempotencyKey[]
 
   @@index([campaignId])
   @@unique([campaignId, websiteUrl])
+}
+
+model IdempotencyKey {
+  key        String   @id
+  stage      String
+  campaignId String?
+  leadId     String?
+  result     Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  lead     Lead?     @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@index([stage])
+  @@index([campaignId])
+  @@index([leadId])
+}
+
+model WebhookEvent {
+  id         String    @id @default(cuid())
+  provider   String
+  externalId String
+  eventType  String
+  payload    Json
+  processedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  @@unique([provider, externalId, eventType])
+  @@index([provider, eventType])
+  @@index([processedAt])
 }
 
 model Event {

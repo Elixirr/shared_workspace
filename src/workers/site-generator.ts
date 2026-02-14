@@ -20,6 +20,7 @@ type GenerateSiteInput = {
   businessName: string;
   city: string;
   niche: string;
+  sourceMode: string | null;
   websiteUrl: string | null;
   services: string[];
   claims: string[];
@@ -105,6 +106,17 @@ const toSentence = (value: string): string => {
 
 const serviceDescription = (service: string, city: string): string =>
   `Tailored ${service.toLowerCase()} solutions for property owners in ${city}, with durable materials and clean execution.`;
+
+const inferNicheLabel = (niche: string, businessName: string, websiteUrl: string | null): string => {
+  const joined = `${niche} ${businessName} ${websiteUrl ?? ""}`.toLowerCase();
+  if (joined.includes("construction")) return "construction";
+  if (joined.includes("remodel")) return "remodeling";
+  if (joined.includes("plumb")) return "plumbing";
+  if (joined.includes("electrical") || joined.includes("electrician")) return "electrical";
+  if (joined.includes("hvac") || joined.includes("heating") || joined.includes("cooling")) return "hvac";
+  if (joined.includes("roof")) return "roofing";
+  return niche;
+};
 
 const sanitizeScrapedSentence = (value: string): string => {
   const cleaned = value
@@ -295,18 +307,23 @@ const generateAICopy = async (input: GenerateSiteInput): Promise<GeneratedCopy |
 const buildIndexHtml = (input: GenerateSiteInput, aiCopy: GeneratedCopy | null): string => {
   const palette = paletteFromBrandColors(input.brandColors);
   const sheetDataUrlLiteral = JSON.stringify(input.sheetDataUrl ?? "");
-  const displayNiche = toTitleCase(input.niche);
+  const inferredNiche = inferNicheLabel(input.niche, input.businessName, input.websiteUrl);
+  const displayNiche = toTitleCase(inferredNiche);
+  const cityLabel =
+    input.sourceMode === "manual-one" && input.city.toLowerCase() === "service area"
+      ? "your area"
+      : input.city;
   const cleanedSummary = sanitizeScrapedSentence(toSentence(aiCopy?.heroSummary ?? "") || toSentence(input.summary));
   const primarySummary =
-    looksUnusableCopy(cleanedSummary) ? buildFallbackSummary(input.niche, input.city) : cleanedSummary;
+    looksUnusableCopy(cleanedSummary) ? buildFallbackSummary(inferredNiche, cityLabel) : cleanedSummary;
   const aboutHeadline = aiCopy?.aboutHeadline || `${displayNiche} Experts in ${input.city}`;
   const aboutBio =
     aiCopy?.aboutBio ||
     (looksUnusableCopy(sanitizeScrapedSentence(toSentence(input.summary)))
       ? ""
       : sanitizeScrapedSentence(toSentence(input.summary))) ||
-    `From small repairs to full replacements, ${input.businessName} delivers dependable ${input.niche.toLowerCase()} support across ${input.city}.`;
-  const trustItems = aiCopy?.trustPoints ?? buildTrustPoints(input.claims, input.services, input.city);
+    `From small repairs to full replacements, ${input.businessName} delivers dependable ${inferredNiche.toLowerCase()} support across ${cityLabel}.`;
+  const trustItems = aiCopy?.trustPoints ?? buildTrustPoints(input.claims, input.services, cityLabel);
   const trustPoints = trustItems.map((item) => `<li>${item}</li>`).join("");
   const sourceHost = input.websiteUrl
     ? (() => {
@@ -323,7 +340,7 @@ const buildIndexHtml = (input: GenerateSiteInput, aiCopy: GeneratedCopy | null):
     : ["roof replacement", "metal roofing", "emergency repairs"];
   const servicesMarkup = services.slice(0, 3).map((service, idx) => {
     const serviceTitle = toTitleCase(service);
-    const description = aiCopy?.serviceDescriptions[service] ?? serviceDescription(service, input.city);
+    const description = aiCopy?.serviceDescriptions[service] ?? serviceDescription(service, cityLabel);
     const imageKey = idx === 0 ? "{{SERVICE_IMAGE_URL_1}}" : idx === 1 ? "{{SERVICE_IMAGE_URL_2}}" : "{{SERVICE_IMAGE_URL_3}}";
     return `<article class="service-card">
       <img src="${imageKey}" alt="${serviceTitle} project" loading="lazy" />
@@ -357,7 +374,7 @@ const buildIndexHtml = (input: GenerateSiteInput, aiCopy: GeneratedCopy | null):
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${input.businessName} | ${displayNiche} in ${input.city}</title>
+    <title>${input.businessName} | ${displayNiche} in ${cityLabel}</title>
     <style>
       :root {
         --brand: ${palette.brand};
@@ -600,7 +617,7 @@ const buildIndexHtml = (input: GenerateSiteInput, aiCopy: GeneratedCopy | null):
           <img src="{{HERO_IMAGE_URL}}" alt="Roofing team working on a residential project" />
         </div>
         <div class="hero-copy">
-          <p class="eyebrow">${displayNiche} in ${input.city}</p>
+          <p class="eyebrow">${displayNiche} in ${cityLabel}</p>
           <h1 id="businessName">Protect Your Home with Expert Roofing Solutions</h1>
           <p id="heroSummary">${primarySummary}</p>
           <div class="trust-badges">${trustBadges}</div>
@@ -612,7 +629,7 @@ const buildIndexHtml = (input: GenerateSiteInput, aiCopy: GeneratedCopy | null):
       </section>
 
       <section class="trust-strip">
-        <article class="trust-card"><span class="trust-dot">★</span><div><strong>4.9/5 Rating</strong><span>Trusted by homeowners across ${input.city}</span></div></article>
+        <article class="trust-card"><span class="trust-dot">★</span><div><strong>4.9/5 Rating</strong><span>Trusted by homeowners across ${cityLabel}</span></div></article>
         <article class="trust-card"><span class="trust-dot">✓</span><div><strong>Licensed & Insured</strong><span>Code-compliant and safety-first project delivery</span></div></article>
         <article class="trust-card"><span class="trust-dot">⚡</span><div><strong>Fast Turnarounds</strong><span>Clear timelines with consistent updates</span></div></article>
       </section>
@@ -634,7 +651,7 @@ const buildIndexHtml = (input: GenerateSiteInput, aiCopy: GeneratedCopy | null):
             </div>
             <p id="aboutBio">${aboutBio}</p>
             <ul class="checklist">${trustPoints}</ul>
-            <p id="businessAddress" style="margin-top:10px;">Based in ${input.city}, serving nearby neighborhoods and surrounding suburbs.</p>
+            <p id="businessAddress" style="margin-top:10px;">Based in ${cityLabel}, serving nearby neighborhoods and surrounding suburbs.</p>
             ${sourceHost ? `<p style="margin-top:8px;">Source profile: ${sourceHost}</p>` : ""}
           </article>
           <div>
@@ -775,7 +792,7 @@ const buildIndexHtml = (input: GenerateSiteInput, aiCopy: GeneratedCopy | null):
           if (businessName) {
             const heading = document.getElementById("businessName");
             if (heading) heading.textContent = businessName;
-            document.title = businessName + " | ${displayNiche} in ${input.city}";
+            document.title = businessName + " | ${displayNiche} in ${cityLabel}";
           }
           if (phone) {
             const phoneEl = document.getElementById("businessPhone");
@@ -932,11 +949,15 @@ const processSiteJob = async (job: Job<SiteJob>): Promise<void> => {
     select: { metadata: true }
   });
   const campaignConfig = campaignConfigEvent?.metadata as
-    | { sheetDataUrl?: unknown }
+    | { sheetDataUrl?: unknown; mode?: unknown }
     | undefined;
   const sheetDataUrl =
     typeof campaignConfig?.sheetDataUrl === "string"
       ? campaignConfig.sheetDataUrl
+      : null;
+  const sourceMode =
+    typeof campaignConfig?.mode === "string"
+      ? campaignConfig.mode
       : null;
 
   const output = await openClawClient.generateSite({
@@ -944,6 +965,7 @@ const processSiteJob = async (job: Job<SiteJob>): Promise<void> => {
     businessName: lead.businessName ?? "Local Contractor",
     city: lead.campaign.city,
     niche: lead.campaign.niche,
+    sourceMode,
     websiteUrl: lead.websiteUrl,
     services,
     claims,
